@@ -1,0 +1,1 @@
+Repository of MedDiTPro. process_mimic_ehr.py handles data processing for both MIMIC-III and MIMIC-IV dataset. model.py contains the model MedDiTPro (called EHRModel in this version). Runner, configs, and dataloader is also included.
