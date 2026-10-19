@@ -13,16 +13,6 @@ class MIMIC4_icd9_ModelConfig:
     cross_modal_ffn_multiplier: int = 3
     denoise_ffn_multiplier: int = 4
 
-    # Time prompt transformer settings
-    time_num_attention_heads: int = 8
-    time_num_hidden_layers: int = 4
-    time_ffn_multiplier: int = 2
-    num_time_tokens: int = 2
-    
-    @property
-    def time_intermediate_size(self) -> int:
-        return self.hidden_size * self.time_ffn_multiplier
-    
     # Shared transformer settings
     shared_num_attention_heads: int = 8
     shared_num_hidden_layers: int = 4
@@ -117,7 +107,6 @@ class MIMIC4_icd9_TrainingConfig:
     # Loss weights
     diff_weight: float = 1.0
     pred_weight: float = 1.0
-    time_loss_weight: float = 1e-5
     
     # Optimizer settings
     weight_decay: float = 0.01

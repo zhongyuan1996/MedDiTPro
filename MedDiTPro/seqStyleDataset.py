@@ -3,8 +3,6 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import pickle
 import random
-from functools import lru_cache
-from open_clip import create_model_from_pretrained, get_tokenizer
 import pandas as pd
 
 

@@ -385,11 +385,7 @@ class EHRModel(nn.Module):
         # Cross-modality transformer
         self.cross_modal_transformer = promptTransformerBlock(config, is_cross_modal=True)
 
-        self.time_prompt_generator = TimePromptGenerator(config)
-
         self.diffusion = LatentDiffusionModule(config)
-
-        self.time_predictor = TimePredictor(config)
 
         self.prediction_heads = nn.ModuleDict({
             'diag': nn.Linear(config.hidden_size, config.diag_vocab_size),

@@ -16,13 +16,12 @@ import torch.nn.functional as F
 from seqStyleDataset import EHRDataloader, create_dataloader
 from config_mimic3 import MIMIC3_ModelConfig, MIMIC3_TrainingConfig
 from config_mimic4_icd9 import MIMIC4_icd9_ModelConfig, MIMIC4_icd9_TrainingConfig
-from config_eicu import EICU_ModelConfig, EICU_TrainingConfig
-from config_breast import BREAST_ModelConfig, BREAST_TrainingConfig
 from model import EHRModel
 from evaluator import InVisitEvaluator
 import math
 import os
 import argparse
+import pickle
 from typing import Union
 
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -42,21 +41,17 @@ class FocalLoss(nn.Module):
 
 class Runner:
     def __init__(self,
-                model_config: Union[MIMIC3_ModelConfig, MIMIC4_icd9_ModelConfig, EICU_ModelConfig, BREAST_ModelConfig],
-                training_config: Union[MIMIC3_TrainingConfig, MIMIC4_icd9_TrainingConfig, EICU_TrainingConfig, BREAST_TrainingConfig],
+                model_config: Union[MIMIC3_ModelConfig, MIMIC4_icd9_ModelConfig],
+                training_config: Union[MIMIC3_TrainingConfig, MIMIC4_icd9_TrainingConfig],
                 resume_from=None,
-                ablation=None,
-                timed=False):
+                ablation=None):
         self.model_config = model_config
         self.training_config = training_config
         self.current_step = 0
         self.resume_from = resume_from
         self.ablation = ablation
-        self.timed = timed
         self.dataset_name = ('mimic3' if isinstance(training_config, MIMIC3_TrainingConfig) 
-                     else 'mimic4_icd9' if isinstance(training_config, MIMIC4_icd9_TrainingConfig) 
-                     else 'eicu' if isinstance(training_config, EICU_TrainingConfig)
-                     else 'breast' if isinstance(training_config, BREAST_TrainingConfig)
+                     else 'mimic4_icd9' if isinstance(training_config, MIMIC4_icd9_TrainingConfig)
                      else None)
         assert self.dataset_name is not None, "Unsupported training configuration type"
 
@@ -178,12 +173,6 @@ class Runner:
             elif isinstance(self.training_config, MIMIC4_icd9_TrainingConfig):
                 data_path = self.training_config.mimiciv_toy_path
                 code_to_index_path = self.training_config.mimiciv_mapping_path
-            elif isinstance(self.training_config, EICU_TrainingConfig):
-                data_path = self.training_config.eicu_toy_path
-                code_to_index_path = self.training_config.eicu_mapping_path
-            elif isinstance(self.training_config, BREAST_TrainingConfig):
-                data_path = self.training_config.breast_toy_path
-                code_to_index_path = self.training_config.breast_mapping_path
             else:
                 raise ValueError("Unsupported training configuration type")
 
@@ -252,56 +241,6 @@ class Runner:
                     mask_prob=self.training_config.mask_prob
                 )
 
-            elif isinstance(self.training_config, EICU_TrainingConfig):
-                train_loader = create_dataloader(
-                    data_path=self.training_config.eicu_train_path,
-                    code_to_index_path=self.training_config.eicu_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
-                val_loader = create_dataloader(
-                    data_path=self.training_config.eicu_val_path,
-                    code_to_index_path=self.training_config.eicu_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
-                test_loader = create_dataloader(
-                    data_path=self.training_config.eicu_test_path,
-                    code_to_index_path=self.training_config.eicu_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
-            elif isinstance(self.training_config, BREAST_TrainingConfig):
-                train_loader = create_dataloader(
-                    data_path=self.training_config.breast_train_path,
-                    code_to_index_path=self.training_config.breast_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
-                val_loader = create_dataloader(
-                    data_path=self.training_config.breast_val_path,
-                    code_to_index_path=self.training_config.breast_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
-                test_loader = create_dataloader(
-                    data_path=self.training_config.breast_test_path,
-                    code_to_index_path=self.training_config.breast_mapping_path,
-                    batch_size=self.training_config.batch_size,
-                    max_seq_length=self.model_config.max_position_embeddings,
-                    num_workers=self.training_config.num_workers,
-                    mask_prob=self.training_config.mask_prob
-                )
             
             else:
                 raise ValueError("Unsupported training configuration type")
@@ -326,31 +265,17 @@ class Runner:
                 modality_indices = batch['modality_indices'].to(self.device)
                 mlm_labels = batch['mlm_labels'].to(self.device)
 
-                if self.timed:
-                    time_gaps = batch['time_gaps'].to(self.device)
-                
                 timesteps = self.sample_timesteps(input_ids.size(0))
-                
+
                 with torch.amp.autocast(device_type='cuda', enabled=bool(self.scaler)):
-                    if self.timed:
-                        predictions, diffusion_loss, time_loss = self.model.time_forward(
-                            input_ids=input_ids,
-                            timegaps=time_gaps,
-                            seq_mask=attention_mask,
-                            modality_mask=modality_mask,
-                            modality_indices=modality_indices,
-                            timesteps=timesteps,
-                            ablation=self.ablation
-                        )
-                    else:
-                        predictions, diffusion_loss = self.model(
-                            input_ids=input_ids,
-                            seq_mask=attention_mask,
-                            modality_mask=modality_mask,
-                            modality_indices=modality_indices,
-                            timesteps=timesteps,
-                            ablation=self.ablation
-                        )
+                    predictions, diffusion_loss = self.model(
+                        input_ids=input_ids,
+                        seq_mask=attention_mask,
+                        modality_mask=modality_mask,
+                        modality_indices=modality_indices,
+                        timesteps=timesteps,
+                        ablation=self.ablation
+                    )
                     
                     # Calculate prediction loss for each modality
                     pred_loss = 0
@@ -395,14 +320,9 @@ class Runner:
                     
                     weighted_pred_loss = pred_loss * self.training_config.pred_weight
                     weighted_diff_loss = diffusion_loss * self.training_config.diff_weight
-                    
-                    if self.timed and not torch.isnan(time_loss) and not torch.isinf(time_loss):
-                        weighted_time_loss = time_loss * self.training_config.time_loss_weight
-                        loss = weighted_pred_loss + weighted_diff_loss + weighted_time_loss
-                        total_time_loss += weighted_time_loss.item()
-                    else:
-                        loss = weighted_pred_loss + weighted_diff_loss
-                    
+
+                    loss = weighted_pred_loss + weighted_diff_loss
+
                     # Rest of training step remains the same
                     if self.scaler:
                         scaled_loss = self.scaler.scale(loss / self.training_config.gradient_accumulation_steps)
@@ -424,7 +344,7 @@ class Runner:
                     
                     total_loss += loss.item()
                     total_diff_loss += weighted_diff_loss.item()
-                    total_pred_loss += weighted_pred_loss.item() if torch.is_tensor(weighted_pred_loss) else weighted_pred_loss # added for breast dataset
+                    total_pred_loss += weighted_pred_loss.item() if torch.is_tensor(weighted_pred_loss) else weighted_pred_loss # pred_loss stays 0 when a batch has no code tokens
 
                     
                     pbar_postfix = {
@@ -432,9 +352,7 @@ class Runner:
                         'diff_loss': weighted_diff_loss.item(),
                         'pred_loss': weighted_pred_loss.item() if torch.is_tensor(weighted_pred_loss) else weighted_pred_loss #same reason as above
                     }
-                    if self.timed and not torch.isnan(time_loss) and not torch.isinf(time_loss):
-                        pbar_postfix['time_loss'] = weighted_time_loss.item()
-                    
+
                     pbar.set_postfix(pbar_postfix)
                     
                     if step % self.training_config.log_steps == 0:
@@ -445,12 +363,6 @@ class Runner:
                             weighted_pred_loss.item() if torch.is_tensor(weighted_pred_loss) else weighted_pred_loss, # same reason as above
                             epoch * num_batches + step
                         )
-                        if self.timed and not torch.isnan(time_loss) and not torch.isinf(time_loss):
-                            self.writer.add_scalar(
-                                'train/time_loss',
-                                weighted_time_loss.item() if torch.is_tensor(weighted_time_loss) else weighted_time_loss, # same reason as above
-                                epoch * num_batches + step
-                            )
 
             self.current_step += 1
             metrics = {
@@ -458,9 +370,7 @@ class Runner:
                 'diff_loss': total_diff_loss / num_batches,
                 'pred_loss': total_pred_loss / num_batches
             }
-            if self.timed:
-                metrics['time_loss'] = total_time_loss / num_batches
-                
+
             return metrics
     
     @torch.no_grad()
@@ -531,8 +441,8 @@ class Runner:
             lpl_metrics, mpl_metrics = self.evaluate(val_loader)
             
             # Calculate median scores
-            curr_median_lpl = np.median([v for v in lpl_metrics.values() if not math.isinf(v)])
-            curr_median_mpl = np.median([v for v in mpl_metrics.values() if not math.isinf(v)])
+            curr_median_lpl = float(np.median([v for v in lpl_metrics.values() if not math.isinf(v)]))
+            curr_median_mpl = float(np.median([v for v in mpl_metrics.values() if not math.isinf(v)]))
             
             logging.info(f"Epoch {epoch} validation LPL per modality: {lpl_metrics}")
             logging.info(f"Epoch {epoch} validation MPL per modality: {mpl_metrics}")
@@ -585,8 +495,8 @@ class Runner:
             test_lpl_metrics, test_mpl_metrics = self.evaluate(test_loader)
         
         # Calculate and log test set median scores
-        test_median_lpl = np.median([v for v in test_lpl_metrics.values() if not math.isinf(v)])
-        test_median_mpl = np.median([v for v in test_mpl_metrics.values() if not math.isinf(v)])
+        test_median_lpl = float(np.median([v for v in test_lpl_metrics.values() if not math.isinf(v)]))
+        test_median_mpl = float(np.median([v for v in test_mpl_metrics.values() if not math.isinf(v)]))
         
         logging.info("Test Set Results:")
         logging.info(f"Test LPL per modality: {test_lpl_metrics}")
@@ -606,7 +516,6 @@ class Runner:
         
         # Save to ablation-specific results file
         results_filename = 'ablation_test_results.pt' if self.ablation else 'test_results.pt'
-        results_filename = 'timed_test_results.pt' if self.timed else results_filename
         test_results_path = Path(self.training_config.checkpoint_dir) / results_filename
         torch.save(test_results, test_results_path)
         logging.info(f"Saved test results to {test_results_path}")
@@ -641,7 +550,7 @@ class Runner:
     def load_checkpoint(self, filename):
         """Load model checkpoint and restore training state"""
         load_path = Path(self.training_config.checkpoint_dir) / filename
-        checkpoint = torch.load(load_path, map_location=self.device)
+        checkpoint = torch.load(load_path, map_location=self.device, weights_only=False)
         
         # Load model and optimizer states
         self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -660,55 +569,92 @@ class Runner:
         
         logging.info(f"Loaded checkpoint from {load_path}")
 
-def get_config(dataset_name: str):
+def get_config(dataset_name: str, **training_overrides):
     """
     Get the appropriate model and training configs based on dataset name
-    
+
     Args:
         dataset_name: Name of the dataset ('mimic3' or 'mimic4_icd9')
-    
+        training_overrides: Fields of the training config to override (e.g. main_dir, device)
+
     Returns:
         tuple: (model_config, training_config)
     """
     if dataset_name.lower() == 'mimic3':
-        return MIMIC3_ModelConfig(), MIMIC3_TrainingConfig()
+        return MIMIC3_ModelConfig(), MIMIC3_TrainingConfig(**training_overrides)
     elif dataset_name.lower() == 'mimic4_icd9':
-        return MIMIC4_icd9_ModelConfig(), MIMIC4_icd9_TrainingConfig()
-    elif dataset_name.lower() == 'eicu':
-        return EICU_ModelConfig(), EICU_TrainingConfig()
-    elif dataset_name.lower() == 'breast':
-        return BREAST_ModelConfig(), BREAST_TrainingConfig()
+        return MIMIC4_icd9_ModelConfig(), MIMIC4_icd9_TrainingConfig(**training_overrides)
     else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}. Choose from: 'mimic3', 'mimic4_icd9', 'eicu', 'breast'")
+        raise ValueError(f"Unsupported dataset: {dataset_name}. Choose from: 'mimic3', 'mimic4_icd9'")
+
+def set_data_dir(training_config, data_dir):
+    """Point every '/path_to_your/...' data path of the training config at data_dir."""
+    for name, value in vars(training_config).items():
+        if name.endswith('_path') and isinstance(value, str) and value.startswith('/path_to_your/'):
+            setattr(training_config, name, os.path.join(data_dir, os.path.basename(value)))
+
+def set_vocab_sizes(model_config, training_config):
+    """Read the per-modality vocabulary sizes from the code_to_index mapping of the dataset."""
+    mapping_path = next(value for name, value in vars(training_config).items() if name.endswith('_mapping_path'))
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(
+            f"code_to_index mapping not found: {mapping_path}. "
+            f"Pass --data_dir with the folder that holds the output of process_mimic_ehr.py.")
+    with open(mapping_path, 'rb') as f:
+        code_to_index = pickle.load(f)
+    prefixes = {'diag': 'D_', 'drug': 'M_', 'proc': 'P_', 'lab': 'L_'}
+    for modality, prefix in prefixes.items():
+        size = sum(1 for code in code_to_index if str(code).startswith(prefix))
+        setattr(model_config, f'{modality}_vocab_size', size)
+    model_config.total_vocab_size = (model_config.diag_vocab_size + model_config.drug_vocab_size +
+                                     model_config.proc_vocab_size + model_config.lab_vocab_size +
+                                     len(model_config.special_tokens))
 
 if __name__ == "__main__":
     # Setup argument parser
     parser = argparse.ArgumentParser(description='Train EHR model on specified dataset')
     parser.add_argument('--dataset', type=str, 
-                      choices=['mimic3', 'mimic4_icd9','eicu','breast'],
+                      choices=['mimic3', 'mimic4_icd9'],
                       default='mimic3',
                       help='Dataset to use for training')
     parser.add_argument('--resume_from', type=str, default=None,
                       help='Path to checkpoint to resume training from')
     parser.add_argument('--ablation', type=str, default=None, choices=['ab1_shared', 'ab2_modality', 'ab3_cross', 'ab4_diffusion'])
-    parser.add_argument('--timed', default=False, help='Legacy argument for training with time information, deprecated')
-    
+    parser.add_argument('--data_dir', type=str, default=None,
+                      help='Folder with the *_ehr.pkl splits and *_code_to_index.pkl written by process_mimic_ehr.py')
+    parser.add_argument('--main_dir', type=str, default=None,
+                      help='Output folder for checkpoints, logs and TensorBoard runs (default: ./mainRes)')
+    parser.add_argument('--device', type=str, default=None,
+                      help="Device such as cuda, cuda:1 or cpu (default: cuda)")
+    parser.add_argument('--num_workers', type=int, default=None,
+                      help='DataLoader workers (default: 4)')
+    parser.add_argument('--debug', action='store_true',
+                      help='Use the toy split and short debug settings')
+
     # Parse arguments
     args = parser.parse_args()
-    
+
     # Get appropriate configs based on dataset name
-    model_config, training_config = get_config(args.dataset)
-    
+    overrides = {name: value for name, value in [('main_dir', args.main_dir), ('device', args.device),
+                                                 ('num_workers', args.num_workers)] if value is not None}
+    if args.debug:
+        overrides['debug'] = True
+    model_config, training_config = get_config(args.dataset, **overrides)
+    if args.data_dir:
+        set_data_dir(training_config, args.data_dir)
+    if training_config.device.startswith('cpu'):
+        training_config.use_amp = False
+    set_vocab_sizes(model_config, training_config)
+
     # Print training setup
     print(f"\nTraining Setup:")
     print(f"Dataset: {args.dataset}")
     print(f"Resume from: {args.resume_from if args.resume_from else 'No checkpoint'}")
     print(f"Experiment name: {training_config.experiment_name}")
     print(f"Debug mode: {'Enabled' if training_config.debug else 'Disabled'}")
-    print(f"Training model with time information: {args.timed}")
-    
+
     # Create runner
-    runner = Runner(model_config, training_config, resume_from=args.resume_from, ablation=args.ablation, timed=args.timed)
+    runner = Runner(model_config, training_config, resume_from=args.resume_from, ablation=args.ablation)
     
     # Start training
     runner.train()

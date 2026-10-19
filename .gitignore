@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+# MIMIC data and everything derived from it must stay out of the repository
+*.csv
+*.csv.gz
+*.pkl
+*_ids.txt
+mimiciii/
+mimiciv/
+processed/
+
+# training outputs
+mainRes/
+debugRes/
+*.pt

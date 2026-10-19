@@ -1,9 +1,10 @@
 import sys
+import os
+import argparse
 import pickle
 from datetime import datetime
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 
@@ -73,37 +74,47 @@ def chop_formulary_code(row):
     return str(chopped_code)
 
 
+def csv_file(file_path):
+    """Use the .csv.gz file (as distributed by PhysioNet) when the uncompressed .csv is not there."""
+    if not os.path.exists(file_path) and os.path.exists(file_path + '.gz'):
+        return file_path + '.gz'
+    return file_path
+
+def read_lab_events(file_path):
+    """Read only the lab columns used downstream (subject_id, hadm_id, itemid); the full tables are very large."""
+    return pd.read_csv(file_path, usecols=lambda column: column.lower() in ('subject_id', 'hadm_id', 'itemid'))
+
 # Load dataset function with proper column names handling and merging strategy
-def load_data(dataset_name):
+def load_data(dataset_name, path=None):
     if dataset_name == "mimic_iii":
-        path = 'mimiciii/1.4/'
+        path = os.path.join(path, '') if path else 'mimiciii/1.4/'
         print("Loading MIMIC-III dataset files...")
-        raw_admission = pd.read_csv(path + 'ADMISSIONS.csv')
+        raw_admission = pd.read_csv(csv_file(path + 'ADMISSIONS.csv'))
         print('admission loaded')
-        raw_patient = pd.read_csv(path + 'PATIENTS.csv')
+        raw_patient = pd.read_csv(csv_file(path + 'PATIENTS.csv'))
         print('patient loaded')
-        raw_diag = pd.read_csv(path + 'DIAGNOSES_ICD.csv')
+        raw_diag = pd.read_csv(csv_file(path + 'DIAGNOSES_ICD.csv'))
         print('diagnoses loaded')
-        raw_drug = pd.read_csv(path + 'PRESCRIPTIONS.csv')
+        raw_drug = pd.read_csv(csv_file(path + 'PRESCRIPTIONS.csv'))
         print('prescriptions loaded')
-        raw_lab = pd.read_csv(path + 'LABEVENTS.csv')
+        raw_lab = read_lab_events(csv_file(path + 'LABEVENTS.csv'))
         print('labevents loaded')
-        raw_proc = pd.read_csv(path + 'PROCEDURES_ICD.csv')
+        raw_proc = pd.read_csv(csv_file(path + 'PROCEDURES_ICD.csv'))
         print('procedures loaded')
     elif dataset_name == "mimic_iv":
-        path = 'mimiciv/3.0/hosp/'
+        path = os.path.join(path, '') if path else 'mimiciv/3.0/hosp/'
         print("Loading MIMIC-IV dataset files...")
-        raw_admission = pd.read_csv(path + 'admissions.csv')
+        raw_admission = pd.read_csv(csv_file(path + 'admissions.csv'))
         print('admission loaded')
-        raw_patient = pd.read_csv(path + 'patients.csv')
+        raw_patient = pd.read_csv(csv_file(path + 'patients.csv'))
         print('patient loaded')
-        raw_diag = pd.read_csv(path + 'diagnoses_icd.csv')
+        raw_diag = pd.read_csv(csv_file(path + 'diagnoses_icd.csv'))
         print('diagnoses loaded')
-        raw_drug = pd.read_csv(path + 'prescriptions.csv')
+        raw_drug = pd.read_csv(csv_file(path + 'prescriptions.csv'))
         print('prescriptions loaded')
-        raw_lab = pd.read_csv(path + 'labevents.csv')
+        raw_lab = read_lab_events(csv_file(path + 'labevents.csv'))
         print('labevents loaded')
-        raw_proc = pd.read_csv(path + 'procedures_icd.csv')
+        raw_proc = pd.read_csv(csv_file(path + 'procedures_icd.csv'))
         print('procedures loaded')
     else:
         raise ValueError("Invalid dataset name. Supported values: mimic_iii, mimic_iv")
@@ -348,7 +359,8 @@ def aggregate_patient_level(visit_data):
     return patient_data
 
 
-def main(dataset_name, short_ICD=True, proc_digits=3, drug_agg=True, save=False, icd_version=None):
+def main(dataset_name, short_ICD=True, proc_digits=3, drug_agg=True, save=False, icd_version=None,
+         raw_dir=None, out_dir='.'):
     """
     Main function to process MIMIC datasets
     Args:
@@ -358,8 +370,10 @@ def main(dataset_name, short_ICD=True, proc_digits=3, drug_agg=True, save=False,
         drug_agg: Whether to aggregate drug codes
         save: Whether to save processed data
         icd_version: For MIMIC-IV only - specify '9' or '10' to filter by ICD version, or None to include both
+        raw_dir: Folder with the raw MIMIC CSV files (default: mimiciii/1.4/ or mimiciv/3.0/hosp/)
+        out_dir: Folder the processed pickles are written to
     """
-    raw_admission, raw_patient, raw_diag, raw_drug, raw_lab, raw_proc = load_data(dataset_name)
+    raw_admission, raw_patient, raw_diag, raw_drug, raw_lab, raw_proc = load_data(dataset_name, raw_dir)
 
     # Filter by ICD version for MIMIC-IV
     if dataset_name == "mimic_iv" and icd_version is not None:
@@ -434,8 +448,11 @@ def main(dataset_name, short_ICD=True, proc_digits=3, drug_agg=True, save=False,
     if save:
         # Add ICD version to filename for MIMIC-IV
         icd_suffix = f"_icd{icd_version}" if dataset_name == "mimic_iv" and icd_version is not None else ""
-        pickle.dump(patient_data, open(f"{dataset_name}{icd_suffix}_ehr.pkl", "wb"))
-        pickle.dump(code_to_index, open(f"{dataset_name}{icd_suffix}_code_to_index.pkl", "wb"))
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, f"{dataset_name}{icd_suffix}_ehr.pkl"), "wb") as f:
+            pickle.dump(patient_data, f)
+        with open(os.path.join(out_dir, f"{dataset_name}{icd_suffix}_code_to_index.pkl"), "wb") as f:
+            pickle.dump(code_to_index, f)
 
     print(f"Data from {dataset_name} processed successfully!")
     if dataset_name == "mimic_iv" and icd_version is not None:
@@ -559,25 +576,36 @@ def take_a_look_at_mapping(dataset_name='mimic_iii', icd_version=None):
             for code, index in sorted(codes.items(), key=lambda x: x[1])[:5]:
                 print(f"    {code}: {index}")
 
-def split_data_by_reference(patient_data, code_to_index, dataset_name='mimic_iii', icd_version=None, save=True):
+def split_data_by_reference(patient_data, code_to_index, dataset_name='mimic_iii', icd_version=None, save=True,
+                            out_dir='.', split_dir='.'):
     """
-    Split the processed EHR data. For MIMIC-III, uses reference files.
-    For MIMIC-IV, performs random split with 75:10:15 ratio.
-    
+    Split the processed EHR data. For MIMIC-III, uses the reference split files
+    ({train,val,test,toy}_3digmimic.csv in split_dir) when they are available.
+    Otherwise (and for MIMIC-IV), performs a seeded random split with 75:10:15 ratio.
+
     Args:
         patient_data: The processed patient data dictionary
         code_to_index: The code to index mapping dictionary
         dataset_name: The name of the dataset ('mimic_iii' or 'mimic_iv')
         icd_version: For MIMIC-IV only - specify '9' or '10' to process specific ICD version data
         save: Whether to save the split datasets
+        out_dir: Folder the split pickles are written to
+        split_dir: Folder with the MIMIC-III reference split files
     """
-    if dataset_name == 'mimic_iii':
+    reference_files = {split_name: os.path.join(split_dir, f'{split_name}_3digmimic.csv')
+                       for split_name in ['train', 'test', 'val', 'toy']}
+    missing = [p for p in reference_files.values() if not os.path.exists(p)]
+    if dataset_name == 'mimic_iii' and 0 < len(missing) < len(reference_files):
+        raise FileNotFoundError(f"Missing MIMIC-III reference split files: {missing}")
+    use_reference = dataset_name == 'mimic_iii' and not missing
+    if dataset_name == 'mimic_iii' and not use_reference:
+        print("MIMIC-III reference split files not found; using a seeded random 75:10:15 split.")
+
+    if use_reference:
         # Use reference files for MIMIC-III
         splits = {
-            'train': pd.read_csv('train_3digmimic.csv')['SUBJECT_ID'].unique(),
-            'test': pd.read_csv('test_3digmimic.csv')['SUBJECT_ID'].unique(),
-            'val': pd.read_csv('val_3digmimic.csv')['SUBJECT_ID'].unique(),
-            'toy': pd.read_csv('toy_3digmimic.csv')['SUBJECT_ID'].unique()
+            split_name: pd.read_csv(file_path)['SUBJECT_ID'].unique()
+            for split_name, file_path in reference_files.items()
         }
         
         split_data = {
@@ -589,8 +617,8 @@ def split_data_by_reference(patient_data, code_to_index, dataset_name='mimic_iii
             for split_name, subject_ids in splits.items()
         }
         
-    else:  # mimic_iv
-        # Random split for MIMIC-IV
+    else:
+        # Random split (MIMIC-IV, or MIMIC-III without the reference files)
         np.random.seed(42)  # Set seed for reproducibility
         
         # Get all patient IDs
@@ -628,14 +656,15 @@ def split_data_by_reference(patient_data, code_to_index, dataset_name='mimic_iii
         # Construct filename suffix based on dataset and ICD version
         icd_suffix = f"_icd{icd_version}" if dataset_name == "mimic_iv" and icd_version is not None else ""
         
+        os.makedirs(out_dir, exist_ok=True)
         for split_name, data in split_data.items():
-            filename = f"{dataset_name}{icd_suffix}_{split_name}_ehr.pkl"
+            filename = os.path.join(out_dir, f"{dataset_name}{icd_suffix}_{split_name}_ehr.pkl")
             with open(filename, "wb") as f:
                 pickle.dump(data, f)
-            
+
             # Also save the patient IDs for each split if it's MIMIC-IV
             if dataset_name == 'mimic_iv':
-                id_filename = f"{dataset_name}{icd_suffix}_{split_name}_ids.txt"
+                id_filename = os.path.join(out_dir, f"{dataset_name}{icd_suffix}_{split_name}_ids.txt")
                 with open(id_filename, "w") as f:
                     for patient_id in data.keys():
                         f.write(f"{patient_id}\n")
@@ -685,37 +714,23 @@ def check_splits(split_data, dataset_name='mimic_iii', icd_version=None):
         print(f"  Visits with diagnoses: {visits_with_diag}")
         if visits_with_diag > 0:
             print(f"  Average diagnoses per visit: {total_diag_codes/visits_with_diag:.2f}")
-        
-        # Sample a few patients
-        if data:
-            sample_patient_id = next(iter(data))
-            sample_patient = data[sample_patient_id]
-            print(f"\n  Sample patient (ID: {sample_patient_id}):")
-            print(f"    Number of visits: {len(sample_patient['visits'])}")
-            print(f"    Visit IDs: {sample_patient['visit_order']}")
-            
-            # Show diagnosis statistics for sample visit
-            if len(sample_patient['visits']) > 0:
-                sample_visit_id = sample_patient['visit_order'][0]
-                sample_visit = sample_patient['visits'][sample_visit_id]
-                diag_codes = sample_visit['diag_code']
-                if len(diag_codes) > 2:  # More than just start/end tokens
-                    print(f"    Sample visit (ID: {sample_visit_id}) has {len(diag_codes)-2} diagnoses")
 
-def split_and_see_data(dataset_name='mimic_iii', save=True, icd_version=None):
+def split_and_see_data(dataset_name='mimic_iii', save=True, icd_version=None, out_dir='.', split_dir='.'):
     """
     Split and analyze the processed EHR data
     Args:
         dataset_name: 'mimic_iii' or 'mimic_iv'
         save: Whether to save the split datasets
         icd_version: For MIMIC-IV only - specify '9' or '10' to process specific ICD version data
+        out_dir: Folder with the processed pickles; the splits are written here too
+        split_dir: Folder with the MIMIC-III reference split files
     """
     # Construct filename based on dataset and ICD version
     icd_suffix = f"_icd{icd_version}" if dataset_name == "mimic_iv" and icd_version is not None else ""
-    
-    with open(f"{dataset_name}{icd_suffix}_ehr.pkl", "rb") as f:
+
+    with open(os.path.join(out_dir, f"{dataset_name}{icd_suffix}_ehr.pkl"), "rb") as f:
         patient_data = pickle.load(f)
-    with open(f"{dataset_name}{icd_suffix}_code_to_index.pkl", "rb") as f:
+    with open(os.path.join(out_dir, f"{dataset_name}{icd_suffix}_code_to_index.pkl"), "rb") as f:
         code_to_index = pickle.load(f)
     
     print("Loaded existing processed data")
@@ -728,7 +743,9 @@ def split_and_see_data(dataset_name='mimic_iii', save=True, icd_version=None):
         code_to_index, 
         dataset_name=dataset_name,
         icd_version=icd_version,
-        save=save
+        save=save,
+        out_dir=out_dir,
+        split_dir=split_dir
     )
     
     # Check the splits
@@ -858,21 +875,29 @@ def take_a_look_at_userid(dataset_name='mimic_iii', id=21016, icd_version=None):
         print(f"Event: {'Died' if visit['event'] else 'Survived'}")
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Process MIMIC-III / MIMIC-IV into the MedDiTPro data format')
+    parser.add_argument('--dataset', type=str, choices=['mimic_iii', 'mimic_iv'], required=True)
+    parser.add_argument('--raw_dir', type=str, default=None,
+                        help='Folder with the raw CSV files (default: mimiciii/1.4/ or mimiciv/3.0/hosp/)')
+    parser.add_argument('--out_dir', type=str, default='.',
+                        help='Folder for the processed *_ehr.pkl and *_code_to_index.pkl files')
+    parser.add_argument('--split_dir', type=str, default='.',
+                        help='MIMIC-III only: folder with the {train,val,test,toy}_3digmimic.csv reference splits')
+    parser.add_argument('--icd_version', type=int, default=9, choices=[9, 10],
+                        help='MIMIC-IV only: ICD version to keep (default: 9)')
+    args = parser.parse_args()
 
+    if args.dataset == 'mimic_iii':
+        missing = [name for name in ['train', 'val', 'test', 'toy']
+                   if not os.path.exists(os.path.join(args.split_dir, f'{name}_3digmimic.csv'))]
+        if 0 < len(missing) < 4:
+            parser.error(f"--split_dir is missing reference split files for: {missing}")
 
-    patient_data, code_to_index = main(dataset_name='mimic_iii', short_ICD=True, proc_digits=3, drug_agg=True, save=True)
-    take_a_look(dataset_name='mimic_iii', num_patients=5)
-    take_a_look_at_mapping(dataset_name='mimic_iii')
-    split_and_see_data(dataset_name='mimic_iii', save=False)
-    take_a_look_at_userid(dataset_name='mimic_iii',id=19166)
-
-    patient_data, code_to_index = main(dataset_name='mimic_iv', short_ICD=True, proc_digits=3, drug_agg=True, save=True, icd_version=9)
-    take_a_look('mimic_iv', icd_version=9)
-    take_a_look_at_mapping('mimic_iv', icd_version=9)
-    split_and_see_data(dataset_name='mimic_iv', save=True)
-    take_a_look_at_userid(dataset_name='mimic_iv',id=19166)
-    split_and_see_data(dataset_name='mimic_iv', save=True, icd_version=9)
-    take_a_look_at_userid(dataset_name='mimic_iv',id=18939460, icd_version=9)
+    icd_version = args.icd_version if args.dataset == 'mimic_iv' else None
+    main(dataset_name=args.dataset, short_ICD=True, proc_digits=3, drug_agg=True, save=True,
+         icd_version=icd_version, raw_dir=args.raw_dir, out_dir=args.out_dir)
+    split_and_see_data(dataset_name=args.dataset, save=True, icd_version=icd_version,
+                       out_dir=args.out_dir, split_dir=args.split_dir)
 
 
 

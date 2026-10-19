@@ -1,0 +1,8 @@
+# For GPU training, install a CUDA build of PyTorch first: https://pytorch.org/get-started/locally/
+torch>=2.3
+transformers
+einops
+numpy
+pandas
+tqdm
+tensorboard
